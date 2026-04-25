@@ -1,13 +1,15 @@
 // background.js — Service Worker
-// v3: single persistent tab + base64 blob download + session state persistence
 
 let batchQueue   = [];
 let batchConfig  = {};
 let batchPaused  = false;
 let batchStopped = false;
-let chatTabId    = null;   // ONE tab reused for entire batch
+let chatTabId    = null;
 let currentIndex = 0;
 let doneCount    = 0;
+
+// ── Open side panel on icon click ──────────────────────
+chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
 
 // ── Persist state to chrome.storage.session (survives SW idle unload) ──
 async function saveState() {
@@ -22,8 +24,8 @@ async function loadState() {
     'batchQueue','batchConfig','batchPaused','batchStopped',
     'chatTabId','currentIndex','doneCount'
   ]);
-  if (s.batchQueue)   batchQueue   = s.batchQueue;
-  if (s.batchConfig)  batchConfig  = s.batchConfig;
+  if (s.batchQueue)              batchQueue   = s.batchQueue;
+  if (s.batchConfig)             batchConfig  = s.batchConfig;
   if (s.batchPaused  !== undefined) batchPaused  = s.batchPaused;
   if (s.batchStopped !== undefined) batchStopped = s.batchStopped;
   if (s.chatTabId    !== undefined) chatTabId    = s.chatTabId;
@@ -35,9 +37,16 @@ async function loadState() {
 loadState();
 
 // ── Message handler ────────────────────────────────────
+const ALLOWED_ORIGINS = ['https://chatgpt.com', 'https://chat.openai.com'];
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  // Only accept messages from the extension itself or allowed ChatGPT origins
+  const fromExtension = !sender.tab;
+  const fromChatGPT   = sender.tab && ALLOWED_ORIGINS.some(o => sender.tab.url?.startsWith(o));
+  if (!fromExtension && !fromChatGPT) return;
+
   if (msg.type === 'START_BATCH')  startBatch(msg.payload);
-  if (msg.type === 'PAUSE_BATCH')  { batchPaused = true; saveState(); }
+  if (msg.type === 'PAUSE_BATCH')  { batchPaused = true;  saveState(); }
   if (msg.type === 'RESUME_BATCH') { batchPaused = false; saveState(); processNext(); }
   if (msg.type === 'STOP_BATCH')   { batchStopped = true; saveState(); closeChatTab(); }
   if (msg.type === 'RETRY_IMAGE')  retryImage(msg.index);
@@ -60,6 +69,8 @@ async function startBatch(payload) {
   try {
     await waitForContentReady(chatTabId, 25000);
   } catch(e) {
+    // Clear dead tab so retry can open a fresh one
+    closeChatTab();
     notifyTelegram('❌ Could not open ChatGPT. Make sure you are logged in.');
     chrome.runtime.sendMessage({ type: 'BATCH_ERROR', error: 'ChatGPT tab failed to load' });
     return;
@@ -97,7 +108,6 @@ async function processImage(item, index) {
     if (result.success) {
       const filename = buildFilename(index, item.name);
 
-      // Validate base64 before downloading — avoid saving corrupt/text response
       if (!result.imageBase64 || !result.imageBase64.startsWith('data:image/')) {
         throw new Error('Response is not a valid image (ChatGPT may have returned text only)');
       }
@@ -113,7 +123,7 @@ async function processImage(item, index) {
 
   } catch(err) {
     item.error = err.message;
-    sendProgress(index, 'error', item.name, doneCount);
+    sendProgress(index, 'error', item.name, doneCount, err.message);
     notifyTelegram(`❌ Error on image ${index + 1}: ${item.name}\n${err.message}`);
   }
 
@@ -122,7 +132,7 @@ async function processImage(item, index) {
 
   if (!batchStopped) {
     if (currentIndex < batchQueue.length) {
-      await sleep(batchConfig.delay * 1000);
+      await sleep((batchConfig.delay ?? 10) * 1000);
       await processNext();
     } else {
       onBatchComplete();
@@ -188,8 +198,9 @@ function openChatGPTTab() {
 
 function closeChatTab() {
   if (chatTabId) {
-    chrome.tabs.remove(chatTabId, () => {});
+    chrome.tabs.remove(chatTabId, () => { chrome.runtime.lastError; });
     chatTabId = null;
+    saveState();
   }
 }
 
@@ -202,7 +213,13 @@ async function retryImage(index) {
 
   if (!chatTabId) {
     chatTabId = await openChatGPTTab();
-    await waitForContentReady(chatTabId, 25000);
+    try {
+      await waitForContentReady(chatTabId, 25000);
+    } catch(e) {
+      closeChatTab();
+      sendProgress(index, 'error', batchQueue[index].name, doneCount, 'ChatGPT tab failed to load');
+      return;
+    }
   }
 
   batchQueue[index].done  = false;
@@ -216,7 +233,7 @@ async function retryImage(index) {
 function saveBase64Image(base64, filename, batchId) {
   return new Promise((resolve, reject) => {
     chrome.downloads.download({
-      url:            base64,   // data:image/png;base64,... works directly
+      url:            base64,
       filename:       `GPT-Batch/${batchId}/${filename}`,
       saveAs:         false,
       conflictAction: 'overwrite'
@@ -296,13 +313,14 @@ function onBatchComplete() {
 // ══════════════════════════════════════════════════════
 //  HELPERS
 // ══════════════════════════════════════════════════════
-function sendProgress(index, status, name, done) {
+function sendProgress(index, status, name, done, errorMsg) {
   chrome.runtime.sendMessage({
     type: 'BATCH_PROGRESS',
     index, status,
     filename: name,
     total:    batchQueue.length,
-    done:     done ?? doneCount
+    done:     done ?? doneCount,
+    errorMsg: errorMsg || null
   });
 }
 

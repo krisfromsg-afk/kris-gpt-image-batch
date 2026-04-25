@@ -105,7 +105,52 @@ function initMain() {
   setupSettings();
   setupTelegram();
   setupBatchControls();
+  restoreBatchState();
   setInterval(checkChatGPTSession, 30000);
+}
+
+// ══════════════════════════════════════════════════════
+//  RESTORE BATCH STATE (when panel is reopened mid-batch)
+// ══════════════════════════════════════════════════════
+function restoreBatchState() {
+  chrome.storage.session.get(
+    ['batchQueue','batchPaused','batchStopped','currentIndex','doneCount'],
+    (s) => {
+      if (!s.batchQueue?.length || s.batchStopped) return;
+
+      const queue = s.batchQueue;
+      const done  = s.doneCount || 0;
+      const total = queue.length;
+
+      batchStatus = s.batchPaused ? 'paused' : 'running';
+
+      $('progress-section').classList.remove('hidden');
+      $('start-btn').classList.add('hidden');
+      $('stop-btn').classList.remove('hidden');
+
+      if (s.batchPaused) {
+        $('resume-btn').classList.remove('hidden');
+      } else {
+        $('pause-btn').classList.remove('hidden');
+      }
+
+      $('prog-log').innerHTML = '';
+      queue.forEach((item, i) => {
+        let status;
+        if (item.done)          status = 'success';
+        else if (item.error)    status = 'error';
+        else if (i === s.currentIndex) status = s.batchPaused ? 'pending' : 'processing';
+        else if (i < s.currentIndex)  status = 'error';
+        else                          status = 'pending';
+        addLogRow(i, item.name, status, {
+          success: '✅ Saved', error: '❌ Error',
+          processing: '⚡ Generating...', pending: '⏳ Pending'
+        }[status]);
+      });
+
+      updateProgress(done, total);
+    }
+  );
 }
 
 // ══════════════════════════════════════════════════════
@@ -440,12 +485,12 @@ let startTime = null;
 
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === 'BATCH_PROGRESS') {
-    const { index, status, filename, total, done } = msg;
+    const { index, status, filename, total, done, errorMsg } = msg;
 
     if (!startTime && done > 0) startTime = Date.now();
 
     setThumbStatus(index, status);
-    updateLogRow(index, filename, status);
+    updateLogRow(index, filename, status, errorMsg);
     updateProgress(done, total);
     updateETA(done, total);
   }
@@ -494,7 +539,7 @@ function addLogRow(i, name, status, label) {
   $('prog-log').appendChild(row);
 }
 
-function updateLogRow(i, name, status) {
+function updateLogRow(i, name, status, errorMsg) {
   const row = $(`log-${i}`);
   if (!row) return;
   const labels = {
@@ -504,7 +549,10 @@ function updateLogRow(i, name, status) {
     pending:    '⏳ Pending'
   };
   row.className = `log-row ${status}`;
-  let html = `<span>${labels[status]||status}</span><span style="margin-left:4px;opacity:.6">${name}</span>`;
+  const errDetail = status === 'error' && errorMsg
+    ? ` <span style="opacity:.6;font-size:10px" title="${errorMsg.replace(/"/g,'&quot;')}">— ${errorMsg.slice(0, 40)}${errorMsg.length > 40 ? '…' : ''}</span>`
+    : '';
+  let html = `<span>${labels[status]||status}${errDetail}</span><span style="margin-left:4px;opacity:.6">${name}</span>`;
   if (status === 'error') {
     html += `<button class="retry-btn" data-index="${i}">Retry</button>`;
   }

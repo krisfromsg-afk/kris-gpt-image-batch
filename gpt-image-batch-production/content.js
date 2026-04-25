@@ -15,8 +15,10 @@ async function waitForChatGPTUI() {
 }
 waitForChatGPTUI();
 
-// ── Message handler ───────────────────────────────────
+// ── Message handler — only accept messages from this extension ──
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (sender.id !== chrome.runtime.id) return;
+
   if (msg.type === 'PING') {
     sendResponse({ ready: isReady });
     return true;
