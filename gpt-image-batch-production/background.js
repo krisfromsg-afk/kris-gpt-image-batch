@@ -91,44 +91,74 @@ async function processNext() {
 }
 
 // ══════════════════════════════════════════════════════
-//  PROCESS ONE IMAGE
+//  PROCESS ONE IMAGE  (with rate-limit retry + heartbeat)
 // ══════════════════════════════════════════════════════
 async function processImage(item, index) {
-  sendProgress(index, 'processing', item.name);
+  const MAX_RL_RETRIES = 3;
+  const RL_WAIT_MS     = 65000; // 65 s — clears most rate-limit windows
 
-  try {
-    const imageData = batchConfig.mode === 'reference'
-      ? batchConfig.refImages          // array [ref0, ref1]
-      : item.data;                     // single base64
+  for (let rlRetry = 0; ; rlRetry++) {
+    sendProgress(index, 'processing', item.name);
 
-    const result = await sendTaskToTab(chatTabId, {
-      imageData,
-      prompt:  buildPrompt(item.prompt),
-      quality: batchConfig.quality,
-      ratio:   batchConfig.ratio,
-      index
-    });
+    // Heartbeat: keep the UI alive while ChatGPT generates (up to ~3 min)
+    let heartbeatSecs = 0;
+    const heartbeatId = setInterval(() => {
+      heartbeatSecs += 5;
+      sendProgress(index, 'processing', item.name, doneCount, null, heartbeatSecs);
+    }, 5000);
 
-    if (result.success) {
-      const filename = buildFilename(index, item.name);
+    let result;
+    try {
+      const imageData = batchConfig.mode === 'reference'
+        ? batchConfig.refImages
+        : item.data;
 
-      if (!result.imageBase64 || !result.imageBase64.startsWith('data:image/')) {
-        throw new Error('Response is not a valid image (ChatGPT may have returned text only)');
-      }
-
-      await saveBase64Image(result.imageBase64, filename, batchConfig.batchId);
-
-      item.done = true;
-      doneCount++;
-      sendProgress(index, 'success', item.name, doneCount);
-    } else {
-      throw new Error(result.error || 'Generation failed');
+      result = await sendTaskToTab(chatTabId, {
+        imageData,
+        prompt:  buildPrompt(item.prompt),
+        quality: batchConfig.quality,
+        ratio:   batchConfig.ratio,
+        index
+      });
+    } finally {
+      clearInterval(heartbeatId);
     }
 
-  } catch(err) {
-    item.error = err.message;
-    sendProgress(index, 'error', item.name, doneCount, err.message);
-    notifyTelegram(`❌ Error on image ${index + 1}: ${item.name}\n${err.message}`);
+    // Rate-limit hit — wait 65 s then retry automatically
+    if (!result.success && result.error === 'RATE_LIMIT') {
+      if (rlRetry < MAX_RL_RETRIES) {
+        notifyTelegram(`⏸ Rate limit (attempt ${rlRetry + 1}/${MAX_RL_RETRIES}) — waiting 65s...`);
+        const waitUntil = Date.now() + RL_WAIT_MS;
+        while (Date.now() < waitUntil) {
+          const remaining = Math.ceil((waitUntil - Date.now()) / 1000);
+          sendProgress(index, 'rate_limit', item.name, doneCount, `Retrying in ${remaining}s`);
+          await sleep(Math.min(5000, waitUntil - Date.now()));
+        }
+        continue; // retry the task
+      }
+      result = { success: false, error: 'Rate limit: max retries reached' };
+    }
+
+    // Normal success / error path
+    try {
+      if (result.success) {
+        if (!result.imageBase64 || !result.imageBase64.startsWith('data:image/')) {
+          throw new Error('Response is not a valid image (ChatGPT may have returned text only)');
+        }
+        const filename = buildFilename(index, item.name);
+        await saveBase64Image(result.imageBase64, filename, batchConfig.batchId);
+        item.done = true;
+        doneCount++;
+        sendProgress(index, 'success', item.name, doneCount);
+      } else {
+        throw new Error(result.error || 'Generation failed');
+      }
+    } catch(err) {
+      item.error = err.message;
+      sendProgress(index, 'error', item.name, doneCount, err.message);
+      notifyTelegram(`❌ Error on image ${index + 1}: ${item.name}\n${err.message}`);
+    }
+    break;
   }
 
   currentIndex++;
@@ -317,14 +347,15 @@ function onBatchComplete() {
 // ══════════════════════════════════════════════════════
 //  HELPERS
 // ══════════════════════════════════════════════════════
-function sendProgress(index, status, name, done, errorMsg) {
+function sendProgress(index, status, name, done, errorMsg, elapsed) {
   chrome.runtime.sendMessage({
     type: 'BATCH_PROGRESS',
     index, status,
     filename: name,
     total:    batchQueue.length,
     done:     done ?? doneCount,
-    errorMsg: errorMsg || null
+    errorMsg: errorMsg || null,
+    elapsed:  elapsed ?? null
   });
 }
 

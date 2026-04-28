@@ -283,6 +283,7 @@ input:checked + .slider:before { transform: translateX(16px); background: var(--
 .log-row.success { background: var(--green15); color: var(--green); }
 .log-row.error   { background: var(--red15);   color: var(--red); }
 .log-row.processing { background: var(--accent10); color: var(--accent); }
+.log-row.rate_limit { background: rgba(245,158,11,.12); color: var(--yellow); }
 .log-row.pending { color: var(--text2); }
 .retry-btn {
   margin-left: auto; background: none;

@@ -626,11 +626,19 @@ function showProgressUI() {
   $('stop-btn').classList.remove('hidden');
 
   $('prog-log').innerHTML = '';
-  imageFiles.forEach((f, i) => {
-    addLogRow(i, f.name, 'pending', '⏳ Pending');
-  });
 
-  updateProgress(0, imageFiles.length);
+  if (appMode === 'reference') {
+    const prompts = getPromptLines().slice(0, 50);
+    prompts.forEach((p, i) => {
+      addLogRow(i, p.length > 40 ? p.slice(0, 40) + '…' : p, 'pending', '⏳ Pending');
+    });
+    updateProgress(0, prompts.length);
+  } else {
+    imageFiles.forEach((f, i) => {
+      addLogRow(i, f.name, 'pending', '⏳ Pending');
+    });
+    updateProgress(0, imageFiles.length);
+  }
 }
 
 // ── Progress messages from background ─────────────────
@@ -638,12 +646,12 @@ let startTime = null;
 
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === 'BATCH_PROGRESS') {
-    const { index, status, filename, total, done, errorMsg } = msg;
+    const { index, status, filename, total, done, errorMsg, elapsed } = msg;
 
     if (!startTime && done > 0) startTime = Date.now();
 
     setThumbStatus(index, status);
-    updateLogRow(index, filename, status, errorMsg);
+    updateLogRow(index, filename, status, errorMsg, elapsed);
     updateProgress(done, total);
     updateETA(done, total);
   }
@@ -692,17 +700,19 @@ function addLogRow(i, name, status, label) {
   $('prog-log').appendChild(row);
 }
 
-function updateLogRow(i, name, status, errorMsg) {
+function updateLogRow(i, name, status, errorMsg, elapsed) {
   const row = $(`log-${i}`);
   if (!row) return;
   const labels = {
-    processing: '⚡ Generating...',
+    processing: elapsed ? `⚡ Generating... (${elapsed}s)` : '⚡ Generating...',
     success:    '✅ Saved',
     error:      '❌ Error',
-    pending:    '⏳ Pending'
+    pending:    '⏳ Pending',
+    rate_limit: '⏸ Rate limit'
   };
   row.className = `log-row ${status}`;
-  const errDetail = status === 'error' && errorMsg
+  const showDetail = (status === 'error' || status === 'rate_limit') && errorMsg;
+  const errDetail = showDetail
     ? ` <span style="opacity:.6;font-size:10px" title="${errorMsg.replace(/"/g,'&quot;')}">— ${errorMsg.slice(0, 40)}${errorMsg.length > 40 ? '…' : ''}</span>`
     : '';
   let html = `<span>${labels[status]||status}${errDetail}</span><span style="margin-left:4px;opacity:.6">${name}</span>`;
