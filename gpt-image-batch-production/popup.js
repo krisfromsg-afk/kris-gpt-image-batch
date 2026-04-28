@@ -5,15 +5,16 @@ const LICENSE_SERVER = CONFIG.LICENSE_SERVER;
 const GET_KEY_URL    = CONFIG.GET_KEY_URL;
 
 // ── State ──────────────────────────────────────────────
-let imageFiles  = [];
-let presets     = {};
-let delayVal    = 10;
-let quality     = 'standard';
-let ratio       = 'auto';
-let tgEnabled   = false;
-let batchStatus = 'idle'; // idle | running | paused | stopped
-let appMode     = 'transform'; // 'transform' | 'reference'
-let refImages   = [null, null]; // File objects for reference mode
+let imageFiles   = [];
+let presets      = {};
+let delayVal     = 10;
+let quality      = 'standard';
+let ratio        = 'auto';
+let tgEnabled    = false;
+let batchStatus  = 'idle'; // idle | running | paused | stopped
+let appMode      = 'transform'; // 'transform' | 'reference'
+let refImages    = [null, null]; // File objects for reference mode
+let resultImages = {}; // { [index]: base64 } — inline preview cache
 
 // ── DOM refs ───────────────────────────────────────────
 const $ = id => document.getElementById(id);
@@ -600,6 +601,7 @@ function pauseBatch() {
   chrome.runtime.sendMessage({ type: 'PAUSE_BATCH' });
   $('pause-btn').classList.add('hidden');
   $('resume-btn').classList.remove('hidden');
+  $('batch-label').textContent = ''; // clear countdown immediately
 }
 
 function resumeBatch() {
@@ -621,10 +623,15 @@ function stopBatch() {
 }
 
 function showProgressUI() {
+  resultImages = {}; // reset preview cache for new batch
   $('progress-section').classList.remove('hidden');
   $('start-btn').classList.add('hidden');
   $('pause-btn').classList.remove('hidden');
   $('stop-btn').classList.remove('hidden');
+
+  // Remove any leftover done-actions banner from a prior run
+  const old = $('batch-done-actions');
+  if (old) old.remove();
 
   $('prog-log').innerHTML = '';
 
@@ -647,9 +654,10 @@ let startTime = null;
 
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === 'BATCH_PROGRESS') {
-    const { index, status, filename, total, done, errorMsg, elapsed } = msg;
+    const { index, status, filename, total, done, errorMsg, elapsed, imageBase64 } = msg;
 
     if (!startTime && done > 0) startTime = Date.now();
+    if (imageBase64) resultImages[index] = imageBase64;
 
     setThumbStatus(index, status);
     updateLogRow(index, filename, status, errorMsg, elapsed);
@@ -672,8 +680,59 @@ chrome.runtime.onMessage.addListener((msg) => {
     $('start-btn').disabled = false;
     $('batch-label').textContent = '';
     startTime = null;
+    showBatchDoneActions(msg.errors, msg.batchId);
+  }
+
+  if (msg.type === 'BATCH_ERROR') {
+    batchStatus = 'idle';
+    $('pause-btn').classList.add('hidden');
+    $('resume-btn').classList.add('hidden');
+    $('stop-btn').classList.add('hidden');
+    $('start-btn').classList.remove('hidden');
+    $('start-btn').disabled = false;
+    $('batch-label').textContent = '';
+    const errRow = document.createElement('div');
+    errRow.className = 'log-row error';
+    errRow.textContent = `❌ ${msg.error}`;
+    $('prog-log').appendChild(errRow);
   }
 });
+
+function showBatchDoneActions(errors, batchId) {
+  const bar = document.createElement('div');
+  bar.id = 'batch-done-actions';
+  bar.className = 'batch-done-actions';
+
+  const folderBtn = `<button id="open-folder-btn" class="btn-xs">📁 Open folder</button>`;
+
+  if (errors > 0) {
+    bar.innerHTML = `
+      <span class="done-err-label">⚠️ ${errors} failed</span>
+      <button id="retry-all-btn" class="btn-xs btn-retry-all">↺ Retry ${errors} failed</button>
+      ${folderBtn}
+    `;
+  } else {
+    bar.innerHTML = `
+      <span class="done-ok-label">✅ All saved · GPT-Batch/${batchId}/</span>
+      ${folderBtn}
+    `;
+  }
+
+  $('progress-section').appendChild(bar);
+
+  document.getElementById('open-folder-btn')?.addEventListener('click', () => {
+    chrome.runtime.sendMessage({ type: 'OPEN_DOWNLOAD_FOLDER' });
+  });
+
+  document.getElementById('retry-all-btn')?.addEventListener('click', () => {
+    bar.remove();
+    batchStatus = 'running';
+    $('start-btn').classList.add('hidden');
+    $('pause-btn').classList.remove('hidden');
+    $('stop-btn').classList.remove('hidden');
+    chrome.runtime.sendMessage({ type: 'RETRY_ALL_FAILED' });
+  });
+}
 
 function updateProgress(done, total) {
   const pct = total > 0 ? Math.round((done / total) * 100) : 0;
@@ -723,7 +782,10 @@ function updateLogRow(i, name, status, errorMsg, elapsed) {
   const errDetail = showDetail
     ? ` <span style="opacity:.6;font-size:10px" title="${errorMsg.replace(/"/g,'&quot;')}">— ${errorMsg.slice(0, 40)}${errorMsg.length > 40 ? '…' : ''}</span>`
     : '';
-  let html = `<span>${labels[status]||status}${errDetail}</span><span style="margin-left:4px;opacity:.6">${name}</span>`;
+  const thumb = (status === 'success' && resultImages[i])
+    ? `<img src="${resultImages[i]}" class="log-thumb" alt="">`
+    : '';
+  let html = `${thumb}<span>${labels[status]||status}${errDetail}</span><span style="margin-left:4px;opacity:.6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${name}</span>`;
   if (status === 'error') {
     html += `<button class="retry-btn" data-index="${i}">Retry</button>`;
   }

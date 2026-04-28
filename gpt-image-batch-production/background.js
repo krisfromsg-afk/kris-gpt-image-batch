@@ -1,12 +1,13 @@
 // background.js — Service Worker
 
-let batchQueue   = [];
-let batchConfig  = {};
-let batchPaused  = false;
-let batchStopped = false;
-let chatTabId    = null;
-let currentIndex = 0;
-let doneCount    = 0;
+let batchQueue    = [];
+let batchConfig   = {};
+let batchPaused   = false;
+let batchStopped  = false;
+let chatTabId     = null;
+let currentIndex  = 0;
+let doneCount     = 0;
+let lastDownloadId = null; // used to open the output folder when batch finishes
 
 // ── Open side panel on icon click ──────────────────────
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
@@ -56,23 +57,28 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   const fromChatGPT   = sender.tab && ALLOWED_ORIGINS.some(o => sender.tab.url?.startsWith(o));
   if (!fromExtension && !fromChatGPT) return;
 
-  if (msg.type === 'START_BATCH')  startBatch(msg.payload);
-  if (msg.type === 'PAUSE_BATCH')  { batchPaused = true;  saveState(); }
-  if (msg.type === 'RESUME_BATCH') { batchPaused = false; saveState(); processNext(); }
-  if (msg.type === 'STOP_BATCH')   { batchStopped = true; saveState(); closeChatTab(); }
-  if (msg.type === 'RETRY_IMAGE')  retryImage(msg.index);
+  if (msg.type === 'START_BATCH')       startBatch(msg.payload);
+  if (msg.type === 'PAUSE_BATCH')       { batchPaused = true;  saveState(); }
+  if (msg.type === 'RESUME_BATCH')      { batchPaused = false; saveState(); processNext(); }
+  if (msg.type === 'STOP_BATCH')        { batchStopped = true; saveState(); closeChatTab(); }
+  if (msg.type === 'RETRY_IMAGE')       retryImage(msg.index);
+  if (msg.type === 'RETRY_ALL_FAILED')  retryAllFailed();
+  if (msg.type === 'OPEN_DOWNLOAD_FOLDER') {
+    if (lastDownloadId) chrome.downloads.show(lastDownloadId);
+  }
 });
 
 // ══════════════════════════════════════════════════════
 //  START BATCH — open ONE tab, reuse for all images
 // ══════════════════════════════════════════════════════
 async function startBatch(payload) {
-  batchQueue   = payload.images;
-  batchConfig  = payload;
-  batchPaused  = false;
-  batchStopped = false;
-  currentIndex = 0;
-  doneCount    = 0;
+  batchQueue    = payload.images;
+  batchConfig   = payload;
+  batchPaused   = false;
+  batchStopped  = false;
+  currentIndex  = 0;
+  doneCount     = 0;
+  lastDownloadId = null;
   await saveState();
 
   chatTabId = await openChatGPTTab();
@@ -80,7 +86,6 @@ async function startBatch(payload) {
   try {
     await waitForContentReady(chatTabId, 25000);
   } catch(e) {
-    // Clear dead tab so retry can open a fresh one
     closeChatTab();
     notifyTelegram('❌ Could not open ChatGPT. Make sure you are logged in.');
     chrome.runtime.sendMessage({ type: 'BATCH_ERROR', error: 'ChatGPT tab failed to load' });
@@ -102,16 +107,29 @@ async function processNext() {
 }
 
 // ══════════════════════════════════════════════════════
-//  PROCESS ONE IMAGE  (with rate-limit retry + heartbeat)
+//  PROCESS ONE IMAGE  (with reconnect + rate-limit retry + heartbeat)
 // ══════════════════════════════════════════════════════
 async function processImage(item, index) {
   const MAX_RL_RETRIES = 3;
-  const RL_WAIT_MS     = 65000; // 65 s — clears most rate-limit windows
+  const RL_WAIT_MS     = 65000;
+
+  // Verify content script is alive before starting; wait if page is reloading
+  try {
+    await waitForContentReady(chatTabId, 25000);
+  } catch {
+    item.error = 'ChatGPT content script reconnect failed';
+    sendProgress(index, 'error', item.name, doneCount, item.error);
+    currentIndex++;
+    await saveState();
+    if (!batchStopped && currentIndex < batchQueue.length) await processNext();
+    else if (!batchStopped) onBatchComplete();
+    return;
+  }
 
   for (let rlRetry = 0; ; rlRetry++) {
     sendProgress(index, 'processing', item.name);
 
-    // Heartbeat: keep the UI alive while ChatGPT generates (up to ~3 min)
+    // Heartbeat: keep UI alive while ChatGPT generates (up to ~3 min)
     let heartbeatSecs = 0;
     const heartbeatId = setInterval(() => {
       heartbeatSecs += 5;
@@ -135,7 +153,7 @@ async function processImage(item, index) {
       clearInterval(heartbeatId);
     }
 
-    // Rate-limit hit — wait 65 s then retry automatically
+    // Rate-limit: wait 65 s then retry automatically
     if (!result.success && result.error === 'RATE_LIMIT') {
       if (rlRetry < MAX_RL_RETRIES) {
         notifyTelegram(`⏸ Rate limit (attempt ${rlRetry + 1}/${MAX_RL_RETRIES}) — waiting 65s...`);
@@ -145,12 +163,12 @@ async function processImage(item, index) {
           sendProgress(index, 'rate_limit', item.name, doneCount, `Retrying in ${remaining}s`);
           await sleep(Math.min(5000, waitUntil - Date.now()));
         }
-        continue; // retry the task
+        continue;
       }
       result = { success: false, error: 'Rate limit: max retries reached' };
     }
 
-    // Normal success / error path
+    // Success / error
     try {
       if (result.success) {
         if (!result.imageBase64 || !result.imageBase64.startsWith('data:image/')) {
@@ -160,7 +178,7 @@ async function processImage(item, index) {
         await saveBase64Image(result.imageBase64, filename, batchConfig.batchId);
         item.done = true;
         doneCount++;
-        sendProgress(index, 'success', item.name, doneCount);
+        sendProgress(index, 'success', item.name, doneCount, null, null, result.imageBase64);
       } else {
         throw new Error(result.error || 'Generation failed');
       }
@@ -177,19 +195,55 @@ async function processImage(item, index) {
 
   if (!batchStopped) {
     if (currentIndex < batchQueue.length) {
-      // Countdown: tick every second so popup can show "Next image in Xs"
+      // Countdown: tick every second, respects pause and stop
       let remaining = (batchConfig.delay ?? 10);
-      while (remaining > 0 && !batchStopped) {
+      while (remaining > 0 && !batchStopped && !batchPaused) {
         chrome.runtime.sendMessage({ type: 'BATCH_COUNTDOWN', seconds: remaining });
         await sleep(1000);
         remaining--;
       }
       chrome.runtime.sendMessage({ type: 'BATCH_COUNTDOWN', seconds: 0 });
-      if (!batchStopped) await processNext();
+      if (!batchStopped && !batchPaused) await processNext();
     } else {
       onBatchComplete();
     }
   }
+}
+
+// ══════════════════════════════════════════════════════
+//  RETRY ALL FAILED — re-runs every errored item
+// ══════════════════════════════════════════════════════
+async function retryAllFailed() {
+  const failedItems = batchQueue
+    .map((item, i) => ({ item, i }))
+    .filter(({ item }) => !item.done);
+
+  if (!failedItems.length) return;
+
+  batchStopped = false;
+  batchPaused  = false;
+  doneCount    = batchQueue.filter(i => i.done).length;
+
+  if (!chatTabId) {
+    chatTabId = await openChatGPTTab();
+    try {
+      await waitForContentReady(chatTabId, 25000);
+    } catch {
+      closeChatTab();
+      chrome.runtime.sendMessage({ type: 'BATCH_ERROR', error: 'ChatGPT tab failed to load for retry' });
+      return;
+    }
+  }
+
+  for (const { item, i } of failedItems) {
+    if (batchStopped) break;
+    item.done  = false;
+    item.error = null;
+    currentIndex = i;
+    await processImage(item, i);
+  }
+
+  onBatchComplete();
 }
 
 // ══════════════════════════════════════════════════════
@@ -208,7 +262,7 @@ function sendTaskToTab(tabId, task) {
 }
 
 // ══════════════════════════════════════════════════════
-//  PING-PONG
+//  PING-PONG / CONTENT READY
 // ══════════════════════════════════════════════════════
 function waitForContentReady(tabId, timeout = 25000) {
   return new Promise((resolve, reject) => {
@@ -257,7 +311,7 @@ function closeChatTab() {
 }
 
 // ══════════════════════════════════════════════════════
-//  RETRY
+//  RETRY SINGLE IMAGE
 // ══════════════════════════════════════════════════════
 async function retryImage(index) {
   if (batchPaused || batchStopped) return;
@@ -293,6 +347,7 @@ function saveBase64Image(base64, filename, batchId) {
       if (chrome.runtime.lastError) {
         reject(new Error(chrome.runtime.lastError.message));
       } else {
+        lastDownloadId = downloadId;
         waitForDownloadComplete(downloadId).then(resolve).catch(reject);
       }
     });
@@ -359,13 +414,17 @@ function onBatchComplete() {
   const errors = batchQueue.filter(i => !i.done).length;
   notifyTelegram(`🎉 Batch complete!\n✅ Success: ${total - errors}/${total}\n❌ Failed: ${errors}`);
   closeChatTab();
-  chrome.runtime.sendMessage({ type: 'BATCH_DONE', total, errors });
+  chrome.runtime.sendMessage({
+    type: 'BATCH_DONE', total, errors,
+    batchId: batchConfig.batchId,
+    lastDownloadId
+  });
 }
 
 // ══════════════════════════════════════════════════════
 //  HELPERS
 // ══════════════════════════════════════════════════════
-function sendProgress(index, status, name, done, errorMsg, elapsed) {
+function sendProgress(index, status, name, done, errorMsg, elapsed, imageBase64) {
   chrome.runtime.sendMessage({
     type: 'BATCH_PROGRESS',
     index, status,
@@ -373,7 +432,8 @@ function sendProgress(index, status, name, done, errorMsg, elapsed) {
     total:    batchQueue.length,
     done:     done ?? doneCount,
     errorMsg: errorMsg || null,
-    elapsed:  elapsed ?? null
+    elapsed:  elapsed ?? null,
+    imageBase64: imageBase64 || null
   });
 }
 
