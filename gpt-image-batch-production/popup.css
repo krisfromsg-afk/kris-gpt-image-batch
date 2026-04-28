@@ -365,6 +365,107 @@ input:checked + .slider:before { transform: translateX(16px); background: var(--
 .modal-title { font-size: 14px; font-weight: 700; }
 .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
 
+/* ───── MODE TOGGLE ───── */
+.mode-toggle-bar {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+}
+.mode-btn {
+  display: flex; flex-direction: column; align-items: flex-start;
+  gap: 2px; padding: 10px 14px;
+  background: var(--bg1); border: 1px solid var(--border);
+  border-radius: 10px; cursor: pointer; transition: all .2s; text-align: left;
+}
+.mode-btn:hover { border-color: var(--accent); background: var(--accent10); }
+.mode-btn.active {
+  border-color: var(--accent);
+  background: linear-gradient(135deg, rgba(0,212,255,.12), rgba(124,58,237,.12));
+  box-shadow: 0 0 0 1px var(--accent30);
+}
+.mode-icon { font-size: 16px; }
+.mode-label { font-size: 13px; font-weight: 700; color: var(--text0); }
+.mode-sub   { font-size: 10px; color: var(--text1); font-family: var(--mono); }
+.mode-btn.active .mode-label { color: var(--accent); }
+
+/* ───── REFERENCE IMAGES ───── */
+.ref-images-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+}
+.ref-slot {
+  position: relative; border-radius: 10px; overflow: hidden;
+  aspect-ratio: 1; cursor: pointer;
+  border: 2px dashed var(--border); transition: all .2s;
+}
+.ref-slot:hover { border-color: var(--accent); }
+.ref-slot.has-image { border-style: solid; border-color: var(--accent30); }
+
+.ref-empty {
+  display: flex; flex-direction: column; align-items: center;
+  justify-content: center; height: 100%; gap: 4px;
+  background: var(--bg2); padding: 12px;
+}
+.ref-empty-icon { font-size: 24px; color: var(--text2); font-weight: 300; }
+.ref-empty-text { font-size: 12px; font-weight: 600; color: var(--text1); }
+.ref-empty-sub  { font-size: 10px; color: var(--text2); }
+
+.ref-preview { position: relative; width: 100%; height: 100%; }
+.ref-preview img {
+  width: 100%; height: 100%; object-fit: cover; display: block;
+}
+.ref-overlay {
+  position: absolute; inset: 0;
+  background: linear-gradient(to top, rgba(0,0,0,.7) 0%, transparent 50%);
+  display: flex; align-items: flex-end; justify-content: space-between;
+  padding: 6px 8px;
+  opacity: 0; transition: opacity .2s;
+}
+.ref-preview:hover .ref-overlay { opacity: 1; }
+.ref-badge {
+  font-size: 10px; font-weight: 700; font-family: var(--mono);
+  color: var(--accent); background: rgba(0,0,0,.6);
+  padding: 2px 6px; border-radius: 4px;
+}
+.ref-clear {
+  background: var(--red15); border: 1px solid var(--red);
+  color: var(--red); border-radius: 4px; font-size: 11px;
+  cursor: pointer; padding: 2px 6px; line-height: 1;
+}
+
+/* ───── PROMPT EDITOR (line-numbered) ───── */
+.prompt-editor {
+  display: flex; border-radius: 8px; overflow: hidden;
+  border: 1px solid var(--border); background: var(--bg2);
+  font-family: var(--mono); font-size: 13px; line-height: 1.65;
+  transition: border-color .2s;
+  min-height: 160px;
+}
+.prompt-editor:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent30); }
+
+.line-numbers {
+  padding: 10px 8px 10px 10px;
+  background: var(--bg1); color: var(--text2);
+  text-align: right; user-select: none;
+  min-width: 36px; border-right: 1px solid var(--border);
+  overflow: hidden; white-space: pre;
+  font-family: var(--mono); font-size: 13px; line-height: 1.65;
+  flex-shrink: 0;
+}
+.prompt-list-area {
+  flex: 1; padding: 10px 12px;
+  background: transparent; border: none; outline: none;
+  color: var(--text0); font-family: var(--mono);
+  font-size: 13px; line-height: 1.65;
+  resize: none; overflow-y: auto; min-height: 160px;
+}
+.prompt-list-area::placeholder { color: var(--text2); }
+
+.prompt-editor-footer {
+  display: flex; align-items: center; justify-content: space-between;
+}
+.prompt-line-count {
+  font-size: 10px; font-weight: 700; color: var(--text1);
+  font-family: var(--mono); text-transform: uppercase; letter-spacing: .5px;
+}
+
 /* ───── ANIMATIONS ───── */
 @keyframes pulse {
   0%, 100% { opacity: 1; }

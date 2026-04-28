@@ -97,11 +97,15 @@ async function processImage(item, index) {
   sendProgress(index, 'processing', item.name);
 
   try {
+    const imageData = batchConfig.mode === 'reference'
+      ? batchConfig.refImages          // array [ref0, ref1]
+      : item.data;                     // single base64
+
     const result = await sendTaskToTab(chatTabId, {
-      imageData: item.data,
-      prompt:    buildPrompt(),
-      quality:   batchConfig.quality,
-      ratio:     batchConfig.ratio,
+      imageData,
+      prompt:  buildPrompt(item.prompt),
+      quality: batchConfig.quality,
+      ratio:   batchConfig.ratio,
       index
     });
 
@@ -281,8 +285,8 @@ function buildFilename(index, originalName) {
 // ══════════════════════════════════════════════════════
 //  PROMPT BUILD
 // ══════════════════════════════════════════════════════
-function buildPrompt() {
-  let p = batchConfig.prompt;
+function buildPrompt(perItemPrompt) {
+  let p = perItemPrompt || batchConfig.prompt;
   if (batchConfig.quality === 'hd') p += ' Use maximum quality and 2K resolution.';
   if (batchConfig.ratio !== 'auto') p += ` Output aspect ratio: ${batchConfig.ratio}.`;
   return p;

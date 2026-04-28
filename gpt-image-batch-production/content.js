@@ -65,19 +65,22 @@ async function runTask(task) {
 // ══════════════════════════════════════════════════════
 //  UPLOAD IMAGE
 // ══════════════════════════════════════════════════════
-async function uploadImage(base64Data) {
-  const blob = base64ToBlob(base64Data);
-  const file = new File([blob], 'image.png', { type: 'image/png' });
+async function uploadImage(base64DataOrArray) {
+  const dataArray = Array.isArray(base64DataOrArray) ? base64DataOrArray : [base64DataOrArray];
+  const files = dataArray.map((b64, i) => {
+    const blob = base64ToBlob(b64);
+    return new File([blob], `image_${i + 1}.png`, { type: 'image/png' });
+  });
 
   const fileInput = await waitForElement('input[type="file"]', 8000);
   if (!fileInput) throw new Error('File input not found');
 
   const dt = new DataTransfer();
-  dt.items.add(file);
+  files.forEach(f => dt.items.add(f));
   fileInput.files = dt.files;
   fileInput.dispatchEvent(new Event('change', { bubbles: true }));
 
-  await sleep(2000);
+  await sleep(1500 + files.length * 800);
 }
 
 // ══════════════════════════════════════════════════════

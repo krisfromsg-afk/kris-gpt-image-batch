@@ -12,6 +12,8 @@ let quality     = 'standard';
 let ratio       = 'auto';
 let tgEnabled   = false;
 let batchStatus = 'idle'; // idle | running | paused | stopped
+let appMode     = 'transform'; // 'transform' | 'reference'
+let refImages   = [null, null]; // File objects for reference mode
 
 // ── DOM refs ───────────────────────────────────────────
 const $ = id => document.getElementById(id);
@@ -100,13 +102,132 @@ function initMain() {
   loadSettings();
   loadPresets();
   checkChatGPTSession();
+  setupModeToggle();
   setupFileInput();
   setupPrompt();
+  setupReferenceImages();
+  setupPromptList();
   setupSettings();
   setupTelegram();
   setupBatchControls();
   restoreBatchState();
   setInterval(checkChatGPTSession, 30000);
+}
+
+// ══════════════════════════════════════════════════════
+//  MODE TOGGLE
+// ══════════════════════════════════════════════════════
+function setupModeToggle() {
+  document.querySelectorAll('.mode-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      appMode = btn.dataset.mode;
+      document.querySelectorAll('.mode-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === appMode));
+      $('transform-section').classList.toggle('hidden', appMode !== 'transform');
+      $('reference-section').classList.toggle('hidden', appMode !== 'reference');
+      updateUI();
+    });
+  });
+}
+
+// ══════════════════════════════════════════════════════
+//  REFERENCE IMAGES
+// ══════════════════════════════════════════════════════
+function setupReferenceImages() {
+  [0, 1].forEach(slot => {
+    const slotEl  = $(`ref-slot-${slot}`);
+    const inputEl = $(`ref-input-${slot}`);
+
+    slotEl.addEventListener('click', () => inputEl.click());
+    inputEl.addEventListener('change', () => {
+      if (inputEl.files[0]) setRefImage(slot, inputEl.files[0]);
+    });
+
+    slotEl.addEventListener('dragover', e => { e.preventDefault(); slotEl.style.borderColor = 'var(--accent)'; });
+    slotEl.addEventListener('dragleave', () => { slotEl.style.borderColor = ''; });
+    slotEl.addEventListener('drop', e => {
+      e.preventDefault();
+      slotEl.style.borderColor = '';
+      const file = Array.from(e.dataTransfer.files).find(f => f.type.startsWith('image/'));
+      if (file) setRefImage(slot, file);
+    });
+
+    const clearBtn = slotEl.querySelector('.ref-clear');
+    if (clearBtn) {
+      clearBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        clearRefImage(slot);
+      });
+    }
+  });
+}
+
+function setRefImage(slot, file) {
+  refImages[slot] = file;
+  const url = URL.createObjectURL(file);
+  $(`ref-img-${slot}`).src = url;
+  $(`ref-empty-${slot}`).classList.add('hidden');
+  $(`ref-preview-${slot}`).classList.remove('hidden');
+  $(`ref-slot-${slot}`).classList.add('has-image');
+  updateUI();
+}
+
+function clearRefImage(slot) {
+  if (refImages[slot]) URL.revokeObjectURL($(`ref-img-${slot}`).src);
+  refImages[slot] = null;
+  $(`ref-img-${slot}`).src = '';
+  $(`ref-empty-${slot}`).classList.remove('hidden');
+  $(`ref-preview-${slot}`).classList.add('hidden');
+  $(`ref-slot-${slot}`).classList.remove('has-image');
+  updateUI();
+}
+
+// ══════════════════════════════════════════════════════
+//  PROMPT LIST (line-numbered editor)
+// ══════════════════════════════════════════════════════
+function setupPromptList() {
+  const ta = $('prompt-list');
+  if (!ta) return;
+
+  ta.addEventListener('input', () => {
+    syncLineNumbers();
+    updatePromptCount();
+    updateUI();
+  });
+
+  ta.addEventListener('scroll', () => {
+    $('line-numbers').scrollTop = ta.scrollTop;
+  });
+
+  $('clear-prompts-btn').addEventListener('click', () => {
+    ta.value = '';
+    syncLineNumbers();
+    updatePromptCount();
+    updateUI();
+  });
+
+  syncLineNumbers();
+}
+
+function syncLineNumbers() {
+  const ta    = $('prompt-list');
+  const ln    = $('line-numbers');
+  if (!ta || !ln) return;
+  const count = ta.value ? ta.value.split('\n').length : 1;
+  ln.textContent = Array.from({ length: count }, (_, i) => i + 1).join('\n');
+  ln.scrollTop = ta.scrollTop;
+}
+
+function getPromptLines() {
+  const ta = $('prompt-list');
+  if (!ta) return [];
+  return ta.value.split('\n').map(l => l.trim()).filter(Boolean);
+}
+
+function updatePromptCount() {
+  const lines = getPromptLines();
+  const n = lines.length;
+  const el = $('ref-prompt-count');
+  if (el) el.textContent = n > 0 ? `${n} prompt${n > 1 ? 's' : ''} · max 50` : '0 prompts';
 }
 
 // ══════════════════════════════════════════════════════
@@ -395,49 +516,81 @@ function setupBatchControls() {
 }
 
 function updateUI() {
-  const ready = imageFiles.length > 0 && $('prompt-input').value.trim().length > 0;
+  let ready = false;
+  let n = 0;
+
+  if (appMode === 'transform') {
+    const hasPrompt = $('prompt-input') && $('prompt-input').value.trim().length > 0;
+    ready = imageFiles.length > 0 && hasPrompt;
+    n = imageFiles.length;
+  } else {
+    const prompts = getPromptLines();
+    ready = refImages[0] && refImages[1] && prompts.length > 0;
+    n = prompts.length;
+  }
+
   $('start-btn').disabled = !ready || batchStatus === 'running';
 
-  const n = imageFiles.length;
   const secs = n * (delayVal + 45);
   const mins = Math.ceil(secs / 60);
   $('batch-label').textContent = n > 0
-    ? `${n} image${n>1?'s':''} · ~${mins} min estimated`
+    ? `${n} ${appMode === 'reference' ? 'prompt' : 'image'}${n > 1 ? 's' : ''} · ~${mins} min estimated`
     : '';
 }
 
 // ── BATCH START ────────────────────────────────────────
 function startBatch() {
+  if (appMode === 'reference') {
+    startReferenceBatch();
+  } else {
+    startTransformBatch();
+  }
+}
+
+function startTransformBatch() {
   if (!imageFiles.length) return;
   const prompt = $('prompt-input').value.trim();
   if (!prompt) return;
 
   batchStatus = 'running';
 
-  // Convert files to base64 array then send to background
   Promise.all(imageFiles.map(fileToBase64)).then(b64array => {
     const batchId = 'batch_' + new Date().toISOString().slice(0,10).replace(/-/g,'');
-
     chrome.runtime.sendMessage({
       type: 'START_BATCH',
       payload: {
-        images: b64array.map((data,i) => ({
-          data,
-          name: imageFiles[i].name,
-          index: i
-        })),
-        prompt,
-        quality,
-        ratio,
-        delay: delayVal,
-        batchId,
-        tg: $('tg-toggle').checked ? {
-          token: $('tg-token').value.trim(),
-          chatId: $('tg-chatid').value.trim()
-        } : null
+        mode: 'transform',
+        images: b64array.map((data, i) => ({ data, name: imageFiles[i].name })),
+        prompt, quality, ratio, delay: delayVal, batchId,
+        tg: $('tg-toggle').checked ? { token: $('tg-token').value.trim(), chatId: $('tg-chatid').value.trim() } : null
       }
     });
+    showProgressUI();
+  });
+}
 
+function startReferenceBatch() {
+  const prompts = getPromptLines().slice(0, 50);
+  if (!refImages[0] || !refImages[1] || !prompts.length) return;
+
+  batchStatus = 'running';
+
+  Promise.all([fileToBase64(refImages[0]), fileToBase64(refImages[1])]).then(([ref0, ref1]) => {
+    const batchId = 'batch_' + new Date().toISOString().slice(0,10).replace(/-/g,'');
+    chrome.runtime.sendMessage({
+      type: 'START_BATCH',
+      payload: {
+        mode: 'reference',
+        refImages: [ref0, ref1],
+        images: prompts.map((p, i) => ({
+          data: null,
+          name: `prompt_${String(i+1).padStart(3,'0')}`,
+          prompt: p
+        })),
+        prompt: '', quality, ratio, delay: delayVal, batchId,
+        tg: $('tg-toggle').checked ? { token: $('tg-token').value.trim(), chatId: $('tg-chatid').value.trim() } : null
+      }
+    });
     showProgressUI();
   });
 }

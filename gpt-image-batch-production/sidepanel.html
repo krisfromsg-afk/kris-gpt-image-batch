@@ -47,38 +47,122 @@
     <!-- Content -->
     <div class="content">
 
-      <!-- INPUT IMAGES -->
-      <div class="section">
-        <div class="section-label">📁 INPUT IMAGES</div>
-        <div class="file-drop-zone" id="drop-zone">
-          <input type="file" id="file-input" multiple accept="image/png,image/jpeg,image/webp" style="display:none">
-          <div class="drop-icon">📂</div>
-          <div id="drop-text" class="drop-text">Click to select images</div>
-          <div id="drop-sub" class="drop-sub">or drag & drop · PNG, JPG, WEBP · max 50</div>
-        </div>
-        <div id="thumb-strip" class="thumb-strip hidden"></div>
-        <div id="img-count" class="img-count hidden"></div>
+      <!-- MODE TOGGLE -->
+      <div class="mode-toggle-bar">
+        <button class="mode-btn active" data-mode="transform">
+          <span class="mode-icon">🔄</span>
+          <span class="mode-label">Transform</span>
+          <span class="mode-sub">N images · 1 prompt</span>
+        </button>
+        <button class="mode-btn" data-mode="reference">
+          <span class="mode-icon">🎯</span>
+          <span class="mode-label">Reference</span>
+          <span class="mode-sub">2 refs · N prompts</span>
+        </button>
       </div>
 
-      <!-- PROMPT -->
-      <div class="section">
-        <div class="section-header">
-          <div class="section-label">✍️ PROMPT TEMPLATE</div>
-          <div class="preset-row">
-            <select id="preset-select" class="preset-dropdown">
-              <option value="">Load preset...</option>
-            </select>
-            <button id="save-preset-btn" class="btn-xs" title="Save">💾</button>
-            <button id="del-preset-btn" class="btn-xs btn-danger" title="Delete">🗑️</button>
+      <!-- ── TRANSFORM MODE ── -->
+      <div id="transform-section">
+
+        <div class="section">
+          <div class="section-label">📁 INPUT IMAGES</div>
+          <div class="file-drop-zone" id="drop-zone">
+            <input type="file" id="file-input" multiple accept="image/png,image/jpeg,image/webp" style="display:none">
+            <div class="drop-icon">📂</div>
+            <div class="drop-text">Click to select images</div>
+            <div class="drop-sub">or drag & drop · PNG, JPG, WEBP · max 50</div>
+          </div>
+          <div id="thumb-strip" class="thumb-strip hidden"></div>
+          <div id="img-count" class="img-count hidden"></div>
+        </div>
+
+        <div class="section">
+          <div class="section-header">
+            <div class="section-label">✍️ PROMPT TEMPLATE</div>
+            <div class="preset-row">
+              <select id="preset-select" class="preset-dropdown">
+                <option value="">Load preset...</option>
+              </select>
+              <button id="save-preset-btn" class="btn-xs" title="Save">💾</button>
+              <button id="del-preset-btn" class="btn-xs btn-danger" title="Delete">🗑️</button>
+            </div>
+          </div>
+          <textarea id="prompt-input" class="prompt-area"
+            placeholder="Describe how you want each image transformed...&#10;&#10;Example: Transform this into a cinematic oil painting with dramatic lighting."
+            rows="4"></textarea>
+          <div class="char-count"><span id="char-count">0</span> characters</div>
+        </div>
+
+      </div><!-- /transform-section -->
+
+      <!-- ── REFERENCE MODE ── -->
+      <div id="reference-section" class="hidden">
+
+        <div class="section">
+          <div class="section-label">🖼️ REFERENCE IMAGES</div>
+          <div class="ref-images-grid">
+
+            <div class="ref-slot" id="ref-slot-0">
+              <input type="file" id="ref-input-0" accept="image/png,image/jpeg,image/webp" style="display:none">
+              <div class="ref-empty" id="ref-empty-0">
+                <div class="ref-empty-icon">＋</div>
+                <div class="ref-empty-text">Reference 1</div>
+                <div class="ref-empty-sub">Click or drag</div>
+              </div>
+              <div class="ref-preview hidden" id="ref-preview-0">
+                <img id="ref-img-0" src="" alt="Ref 1">
+                <div class="ref-overlay">
+                  <span class="ref-badge">Ref 1</span>
+                  <button class="ref-clear" data-slot="0">✕</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="ref-slot" id="ref-slot-1">
+              <input type="file" id="ref-input-1" accept="image/png,image/jpeg,image/webp" style="display:none">
+              <div class="ref-empty" id="ref-empty-1">
+                <div class="ref-empty-icon">＋</div>
+                <div class="ref-empty-text">Reference 2</div>
+                <div class="ref-empty-sub">Click or drag</div>
+              </div>
+              <div class="ref-preview hidden" id="ref-preview-1">
+                <img id="ref-img-1" src="" alt="Ref 2">
+                <div class="ref-overlay">
+                  <span class="ref-badge">Ref 2</span>
+                  <button class="ref-clear" data-slot="1">✕</button>
+                </div>
+              </div>
+            </div>
+
           </div>
         </div>
-        <textarea id="prompt-input" class="prompt-area"
-          placeholder="Describe how you want each image transformed...&#10;&#10;Example: Transform this into a cinematic oil painting with dramatic lighting."
-          rows="4"></textarea>
-        <div class="char-count"><span id="char-count">0</span> characters</div>
-      </div>
 
-      <!-- SETTINGS -->
+        <div class="section">
+          <div class="section-header">
+            <div class="section-label">✍️ PROMPT LIST</div>
+            <span id="prompt-line-count" class="prompt-line-count">0 prompts</span>
+          </div>
+          <div class="prompt-editor" id="prompt-editor">
+            <div class="line-numbers" id="line-numbers">1</div>
+            <textarea
+              id="prompt-list"
+              class="prompt-list-area"
+              placeholder="Paste prompts here, one per line...
+A warrior standing in a neon city at night
+A samurai meditating under cherry blossoms
+A knight riding through a dark forest"
+              spellcheck="false"
+            ></textarea>
+          </div>
+          <div class="prompt-editor-footer">
+            <span id="ref-prompt-count" class="img-count">0 prompts</span>
+            <button id="clear-prompts-btn" class="btn-xs btn-danger">Clear</button>
+          </div>
+        </div>
+
+      </div><!-- /reference-section -->
+
+      <!-- SETTINGS (shared) -->
       <div class="section">
         <div class="section-label">⚙️ SETTINGS</div>
         <div class="settings-grid">
@@ -114,7 +198,7 @@
         </div>
       </div>
 
-      <!-- TELEGRAM -->
+      <!-- TELEGRAM (shared) -->
       <div class="section">
         <div class="section-header">
           <div class="section-label">📬 TELEGRAM NOTIFY</div>
@@ -132,7 +216,7 @@
         </div>
       </div>
 
-      <!-- PROGRESS -->
+      <!-- PROGRESS (shared) -->
       <div id="progress-section" class="section hidden">
         <div class="section-label">📊 PROGRESS</div>
         <div class="progress-meta">
