@@ -36,7 +36,7 @@ async function runTask(task) {
 
     await clickSend();
 
-    const imageUrl    = await waitForNewGeneratedImage(messageCount, 180000);
+    const imageUrl    = await waitForNewGeneratedImage(messageCount, 360000);
     const imageBase64 = await fetchImageAsBase64(imageUrl);
 
     return { success: true, imageBase64 };
@@ -129,7 +129,7 @@ function countAssistantMessages() {
   return document.querySelectorAll('[data-message-author-role="assistant"]').length;
 }
 
-function waitForNewGeneratedImage(prevMessageCount, timeout = 180000) {
+function waitForNewGeneratedImage(prevMessageCount, timeout = 360000) {
   return new Promise((resolve, reject) => {
     const checkRateLimit = () => {
       const selectors = ['[data-testid="rate-limit-message"]', '.text-red-500', '.text-orange-500'];
@@ -145,12 +145,21 @@ function waitForNewGeneratedImage(prevMessageCount, timeout = 180000) {
     const findNewImage = () => {
       const msgs = document.querySelectorAll('[data-message-author-role="assistant"]');
       for (let i = prevMessageCount; i < msgs.length; i++) {
-        const imgs = msgs[i].querySelectorAll(
-          'img[src*="oaiusercontent"], img[src*="files.oaiusercontent"]'
+        // Primary: known ChatGPT image CDN patterns
+        const knownImgs = msgs[i].querySelectorAll(
+          'img[src*="oaiusercontent"], img[src*="blob.core.windows.net"]'
         );
-        if (imgs.length > 0) {
-          const src = imgs[imgs.length - 1].src;
-          if (src?.startsWith('http')) return src;
+        for (const img of knownImgs) {
+          if (img.src?.startsWith('http')) return img.src;
+        }
+        // Fallback: any long https URL in a new assistant message
+        // (generated image URLs are long; skip short UI/avatar/icon URLs)
+        const allImgs = msgs[i].querySelectorAll('img[src^="https://"]');
+        for (const img of Array.from(allImgs).reverse()) {
+          const src = img.src;
+          if (src.includes('/assets/') || src.includes('avatar') ||
+              src.includes('emoji') || src.includes('icon')) continue;
+          if (src.length > 100) return src;
         }
       }
       return null;
