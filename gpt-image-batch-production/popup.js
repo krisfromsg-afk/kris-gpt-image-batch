@@ -616,6 +616,7 @@ function stopBatch() {
   $('resume-btn').classList.add('hidden');
   $('stop-btn').classList.add('hidden');
   $('start-btn').classList.remove('hidden');
+  $('batch-label').textContent = '';
   updateUI();
 }
 
@@ -656,6 +657,12 @@ chrome.runtime.onMessage.addListener((msg) => {
     updateETA(done, total);
   }
 
+  if (msg.type === 'BATCH_COUNTDOWN') {
+    $('batch-label').textContent = msg.seconds > 0
+      ? `⏳ Next image in ${msg.seconds}s...`
+      : '';
+  }
+
   if (msg.type === 'BATCH_DONE') {
     batchStatus = 'idle';
     $('pause-btn').classList.add('hidden');
@@ -663,6 +670,7 @@ chrome.runtime.onMessage.addListener((msg) => {
     $('stop-btn').classList.add('hidden');
     $('start-btn').classList.remove('hidden');
     $('start-btn').disabled = false;
+    $('batch-label').textContent = '';
     startTime = null;
   }
 });
