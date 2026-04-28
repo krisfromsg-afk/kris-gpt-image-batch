@@ -36,7 +36,14 @@ async function runTask(task) {
 
     await clickSend();
 
-    const imageUrl    = await waitForNewGeneratedImage(messageCount, 360000);
+    // Wait for ChatGPT to finish — anchored on send-button state, not URL patterns.
+    // The button goes disabled when ChatGPT starts and re-enables when it finishes.
+    // This works regardless of how ChatGPT serves the generated image.
+    await waitForGenerationComplete(360000);
+    await sleep(800); // let DOM fully settle after completion
+
+    // Scan the new message(s) for the generated image
+    const imageUrl    = await scanForNewImage(messageCount, 8000);
     const imageBase64 = await fetchImageAsBase64(imageUrl);
 
     return { success: true, imageBase64 };
@@ -55,9 +62,8 @@ async function uploadImage(base64DataOrArray) {
     return new File([blob], `image_${i + 1}.png`, { type: 'image/png' });
   });
 
-  // Use the file input closest to the chat composer — avoids matching wrong inputs
   const fileInputs = document.querySelectorAll('input[type="file"]');
-  const fileInput  = fileInputs[fileInputs.length - 1]; // last one is always chat's
+  const fileInput  = fileInputs[fileInputs.length - 1];
   if (!fileInput) throw new Error('File input not found');
 
   const dt = new DataTransfer();
@@ -81,25 +87,22 @@ async function typePrompt(prompt) {
   editor.focus();
   await sleep(300);
 
-  // Primary: execCommand('insertText') — correctly triggers React synthetic events
+  // Primary: execCommand('insertText') — triggers React synthetic events
   document.execCommand('selectAll', false, null);
   const ok = document.execCommand('insertText', false, prompt);
 
   if (!ok) {
-    // Fallback 1: clipboard paste
     try {
       await navigator.clipboard.writeText(prompt);
       document.execCommand('selectAll', false, null);
       document.execCommand('paste');
     } catch {
-      // Fallback 2: direct DOM + InputEvent
       editor.textContent = '';
       editor.focus();
       document.execCommand('insertText', false, prompt);
     }
   }
 
-  // Verify text was actually inserted
   const inserted = editor.textContent || editor.innerText || '';
   if (!inserted.trim()) {
     editor.textContent = prompt;
@@ -113,7 +116,6 @@ async function typePrompt(prompt) {
 //  CLICK SEND
 // ══════════════════════════════════════════════════════
 async function clickSend() {
-  // waitForElement now watches attributes so it catches disabled→enabled
   const btn = await waitForElement(
     'button[data-testid="send-button"]:not([disabled])',
     10000
@@ -123,13 +125,12 @@ async function clickSend() {
 }
 
 // ══════════════════════════════════════════════════════
-//  WAIT FOR NEW IMAGE
+//  WAIT FOR GENERATION COMPLETE
+//  Watches the send button: disabled → enabled transition.
+//  This is independent of image URL patterns — ChatGPT always
+//  re-enables the button when it finishes, no matter what.
 // ══════════════════════════════════════════════════════
-function countAssistantMessages() {
-  return document.querySelectorAll('[data-message-author-role="assistant"]').length;
-}
-
-function waitForNewGeneratedImage(prevMessageCount, timeout = 360000) {
+function waitForGenerationComplete(timeout = 360000) {
   return new Promise((resolve, reject) => {
     const checkRateLimit = () => {
       const selectors = ['[data-testid="rate-limit-message"]', '.text-red-500', '.text-orange-500'];
@@ -142,73 +143,102 @@ function waitForNewGeneratedImage(prevMessageCount, timeout = 360000) {
       return false;
     };
 
-    const SKIP_PATTERNS = ['/assets/', 'avatar', 'emoji', 'icon', 'logo', 'svg', 'favicon'];
-
-    const findNewImage = () => {
-      const msgs = document.querySelectorAll('[data-message-author-role="assistant"]');
-      for (let i = prevMessageCount; i < msgs.length; i++) {
-        const msg = msgs[i];
-
-        // 1. Known CDN domains
-        const knownImgs = msg.querySelectorAll(
-          'img[src*="oaiusercontent"], img[src*="blob.core.windows.net"], img[src*="oaistatic.com/file"]'
-        );
-        for (const img of knownImgs) {
-          if (img.src?.startsWith('http')) return img.src;
-        }
-
-        // 2. Any https img — exclude known UI elements by URL pattern or tiny size
-        const allImgs = msg.querySelectorAll('img[src^="https://"]');
-        for (const img of Array.from(allImgs).reverse()) {
-          const src = img.src;
-          if (SKIP_PATTERNS.some(p => src.includes(p))) continue;
-          // Generated image URLs carry long tokens; UI images are short paths
-          if (src.length > 80) return src;
-        }
-
-        // 3. Canvas fallback (some ChatGPT builds render to canvas)
-        for (const canvas of msg.querySelectorAll('canvas')) {
-          if (canvas.width > 200 && canvas.height > 200) {
-            try { return canvas.toDataURL('image/png'); } catch {}
-          }
-        }
-
-        // 4. CSS background-image fallback
-        for (const el of msg.querySelectorAll('[style*="background-image"]')) {
-          const match = el.style.backgroundImage.match(/url\(["']?(https?:[^"')]+)/);
-          if (match && match[1].length > 80) return match[1];
-        }
-      }
-      return null;
-    };
-
-    const immediate = findNewImage();
-    if (immediate) return resolve(immediate);
-
     const timer = setTimeout(() => {
       obs.disconnect();
       reject(new Error('Timeout: image generation took too long'));
     }, timeout);
 
+    // Track the disabled → enabled transition so we don't fire too early
+    let wentDisabled = false;
+
     const obs = new MutationObserver(() => {
-      if (checkRateLimit()) { obs.disconnect(); clearTimeout(timer); return reject(new Error('RATE_LIMIT')); }
-      const url = findNewImage();
-      if (url) { obs.disconnect(); clearTimeout(timer); resolve(url); }
+      if (checkRateLimit()) {
+        obs.disconnect(); clearTimeout(timer);
+        return reject(new Error('RATE_LIMIT'));
+      }
+
+      const btn = document.querySelector('button[data-testid="send-button"]');
+      if (!btn) return;
+
+      if (!wentDisabled && btn.disabled) {
+        wentDisabled = true; // confirmed: request is in-flight
+        return;
+      }
+
+      if (wentDisabled && !btn.disabled) {
+        obs.disconnect(); clearTimeout(timer);
+        resolve(); // ChatGPT finished
+      }
     });
 
     obs.observe(document.body, {
       childList: true, subtree: true,
-      attributes: true, attributeFilter: ['src']
+      attributes: true, attributeFilter: ['disabled', 'class', 'aria-disabled']
     });
+
+    // Edge case: button already disabled at observation start (very fast re-render)
+    const initial = document.querySelector('button[data-testid="send-button"]');
+    if (initial?.disabled) wentDisabled = true;
   });
+}
+
+// ══════════════════════════════════════════════════════
+//  SCAN FOR NEW IMAGE
+//  Polls every 300 ms for up to `timeout` ms.
+//  Uses 4-layer fallback — works regardless of CDN or rendering method.
+// ══════════════════════════════════════════════════════
+async function scanForNewImage(prevMessageCount, timeout = 8000) {
+  const SKIP = ['/assets/', 'avatar', 'emoji', 'icon', 'logo', '.svg', 'favicon'];
+
+  const find = () => {
+    const msgs = document.querySelectorAll('[data-message-author-role="assistant"]');
+    for (let i = prevMessageCount; i < msgs.length; i++) {
+      const msg = msgs[i];
+
+      // 1. Known ChatGPT CDN domains
+      for (const img of msg.querySelectorAll(
+        'img[src*="oaiusercontent"], img[src*="blob.core.windows.net"], img[src*="oaistatic.com/file"]'
+      )) {
+        if (img.src?.startsWith('http')) return img.src;
+      }
+
+      // 2. Any https img — skip known UI elements, keep long URLs (generated images have long tokens)
+      for (const img of Array.from(msg.querySelectorAll('img[src^="https://"]')).reverse()) {
+        if (SKIP.some(p => img.src.includes(p))) continue;
+        if (img.src.length > 80) return img.src;
+      }
+
+      // 3. Canvas (some ChatGPT builds render to canvas)
+      for (const canvas of msg.querySelectorAll('canvas')) {
+        if (canvas.width > 200 && canvas.height > 200) {
+          try { return canvas.toDataURL('image/png'); } catch {}
+        }
+      }
+
+      // 4. CSS background-image
+      for (const el of msg.querySelectorAll('[style*="background-image"]')) {
+        const match = el.style.backgroundImage.match(/url\(["']?(https?:[^"')]+)/);
+        if (match && match[1].length > 80) return match[1];
+      }
+    }
+    return null;
+  };
+
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    const url = find();
+    if (url) return url;
+    await sleep(300);
+  }
+
+  throw new Error('Image not found in ChatGPT response after generation');
 }
 
 // ══════════════════════════════════════════════════════
 //  FETCH IMAGE AS BASE64
 // ══════════════════════════════════════════════════════
 async function fetchImageAsBase64(url) {
-  // canvas.toDataURL() already returns a data URL — no fetch needed
-  if (url.startsWith('data:')) return url;
+  if (url.startsWith('data:')) return url; // canvas.toDataURL() result
   const res = await fetch(url, { credentials: 'include' });
   if (!res.ok) throw new Error(`Failed to fetch image: ${res.status}`);
   const blob = await res.blob();
@@ -227,6 +257,10 @@ function blobToBase64(blob) {
 // ══════════════════════════════════════════════════════
 //  HELPERS
 // ══════════════════════════════════════════════════════
+function countAssistantMessages() {
+  return document.querySelectorAll('[data-message-author-role="assistant"]').length;
+}
+
 function waitForElement(selector, timeout = 10000) {
   return new Promise((resolve) => {
     const el = document.querySelector(selector);
@@ -237,7 +271,6 @@ function waitForElement(selector, timeout = 10000) {
       if (found) { obs.disconnect(); resolve(found); }
     });
 
-    // Watch both DOM changes AND attribute changes (e.g. disabled → enabled on send button)
     obs.observe(document.body, {
       childList: true, subtree: true,
       attributes: true, attributeFilter: ['disabled', 'class', 'aria-disabled']
