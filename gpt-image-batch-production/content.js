@@ -142,24 +142,41 @@ function waitForNewGeneratedImage(prevMessageCount, timeout = 360000) {
       return false;
     };
 
+    const SKIP_PATTERNS = ['/assets/', 'avatar', 'emoji', 'icon', 'logo', 'svg', 'favicon'];
+
     const findNewImage = () => {
       const msgs = document.querySelectorAll('[data-message-author-role="assistant"]');
       for (let i = prevMessageCount; i < msgs.length; i++) {
-        // Primary: known ChatGPT image CDN patterns
-        const knownImgs = msgs[i].querySelectorAll(
-          'img[src*="oaiusercontent"], img[src*="blob.core.windows.net"]'
+        const msg = msgs[i];
+
+        // 1. Known CDN domains
+        const knownImgs = msg.querySelectorAll(
+          'img[src*="oaiusercontent"], img[src*="blob.core.windows.net"], img[src*="oaistatic.com/file"]'
         );
         for (const img of knownImgs) {
           if (img.src?.startsWith('http')) return img.src;
         }
-        // Fallback: any long https URL in a new assistant message
-        // (generated image URLs are long; skip short UI/avatar/icon URLs)
-        const allImgs = msgs[i].querySelectorAll('img[src^="https://"]');
+
+        // 2. Any https img — exclude known UI elements by URL pattern or tiny size
+        const allImgs = msg.querySelectorAll('img[src^="https://"]');
         for (const img of Array.from(allImgs).reverse()) {
           const src = img.src;
-          if (src.includes('/assets/') || src.includes('avatar') ||
-              src.includes('emoji') || src.includes('icon')) continue;
-          if (src.length > 100) return src;
+          if (SKIP_PATTERNS.some(p => src.includes(p))) continue;
+          // Generated image URLs carry long tokens; UI images are short paths
+          if (src.length > 80) return src;
+        }
+
+        // 3. Canvas fallback (some ChatGPT builds render to canvas)
+        for (const canvas of msg.querySelectorAll('canvas')) {
+          if (canvas.width > 200 && canvas.height > 200) {
+            try { return canvas.toDataURL('image/png'); } catch {}
+          }
+        }
+
+        // 4. CSS background-image fallback
+        for (const el of msg.querySelectorAll('[style*="background-image"]')) {
+          const match = el.style.backgroundImage.match(/url\(["']?(https?:[^"')]+)/);
+          if (match && match[1].length > 80) return match[1];
         }
       }
       return null;
@@ -190,6 +207,8 @@ function waitForNewGeneratedImage(prevMessageCount, timeout = 360000) {
 //  FETCH IMAGE AS BASE64
 // ══════════════════════════════════════════════════════
 async function fetchImageAsBase64(url) {
+  // canvas.toDataURL() already returns a data URL — no fetch needed
+  if (url.startsWith('data:')) return url;
   const res = await fetch(url, { credentials: 'include' });
   if (!res.ok) throw new Error(`Failed to fetch image: ${res.status}`);
   const blob = await res.blob();
