@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>GPT Image Batch Pro</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body class="sidepanel">
+
+  <!-- ===== LICENSE SCREEN ===== -->
+  <div id="license-screen" class="screen">
+    <div class="brand">
+      <div class="brand-icon">⚡</div>
+      <h1>GPT Image Batch Pro</h1>
+      <p class="brand-sub">Powered by gpt-image-2</p>
+    </div>
+    <div class="license-form">
+      <label>LICENSE KEY</label>
+      <div class="input-group">
+        <input type="text" id="license-input" placeholder="XXXX-XXXX-XXXX-XXXX" />
+        <button id="activate-btn" class="btn-primary">Activate</button>
+      </div>
+      <div id="license-error" class="error-msg hidden"></div>
+      <div id="license-loading" class="loading-msg hidden">⏳ Verifying...</div>
+    </div>
+    <p class="license-footer">
+      Don't have a key? <a href="#" id="get-key-link">Get one here →</a>
+    </p>
+  </div>
+
+  <!-- ===== MAIN SCREEN ===== -->
+  <div id="main-screen" class="screen hidden">
+
+    <!-- Header -->
+    <div class="header">
+      <div class="header-left">
+        <span class="logo">⚡</span>
+        <span class="app-name">GPT Image Batch Pro</span>
+      </div>
+      <div class="header-right">
+        <div id="conn-dot" class="status-dot status-checking"></div>
+        <span id="conn-label" class="status-label">Checking...</span>
+        <button id="logout-btn" class="icon-btn" title="Logout license">🔑</button>
+      </div>
+    </div>
+
+    <!-- Content -->
+    <div class="content">
+
+      <!-- MODE TOGGLE -->
+      <div class="mode-toggle-bar">
+        <button class="mode-btn active" data-mode="transform">
+          <span class="mode-icon">🔄</span>
+          <span class="mode-label">Transform</span>
+          <span class="mode-sub">N images · 1 prompt</span>
+        </button>
+        <button class="mode-btn" data-mode="reference">
+          <span class="mode-icon">🎯</span>
+          <span class="mode-label">Reference</span>
+          <span class="mode-sub">2 refs · N prompts</span>
+        </button>
+      </div>
+
+      <!-- ── TRANSFORM MODE ── -->
+      <div id="transform-section">
+
+        <div class="section">
+          <div class="section-label">📁 INPUT IMAGES</div>
+          <div class="file-drop-zone" id="drop-zone">
+            <input type="file" id="file-input" multiple accept="image/png,image/jpeg,image/webp" style="display:none">
+            <div class="drop-icon">📂</div>
+            <div class="drop-text">Click to select images</div>
+            <div class="drop-sub">or drag & drop · PNG, JPG, WEBP · max 50</div>
+          </div>
+          <div id="thumb-strip" class="thumb-strip hidden"></div>
+          <div id="img-count" class="img-count hidden"></div>
+        </div>
+
+        <div class="section">
+          <div class="section-header">
+            <div class="section-label">✍️ PROMPT TEMPLATE</div>
+            <div class="preset-row">
+              <select id="preset-select" class="preset-dropdown">
+                <option value="">Load preset...</option>
+              </select>
+              <button id="save-preset-btn" class="btn-xs" title="Save">💾</button>
+              <button id="del-preset-btn" class="btn-xs btn-danger" title="Delete">🗑️</button>
+            </div>
+          </div>
+          <textarea id="prompt-input" class="prompt-area"
+            placeholder="Describe how you want each image transformed...&#10;&#10;Example: Transform this into a cinematic oil painting with dramatic lighting."
+            rows="4"></textarea>
+          <div class="char-count"><span id="char-count">0</span> characters</div>
+        </div>
+
+      </div><!-- /transform-section -->
+
+      <!-- ── REFERENCE MODE ── -->
+      <div id="reference-section" class="hidden">
+
+        <div class="section">
+          <div class="section-label">🖼️ REFERENCE IMAGES</div>
+          <div class="ref-images-grid">
+
+            <div class="ref-slot" id="ref-slot-0">
+              <input type="file" id="ref-input-0" accept="image/png,image/jpeg,image/webp" style="display:none">
+              <div class="ref-empty" id="ref-empty-0">
+                <div class="ref-empty-icon">＋</div>
+                <div class="ref-empty-text">Reference 1</div>
+                <div class="ref-empty-sub">Click or drag</div>
+              </div>
+              <div class="ref-preview hidden" id="ref-preview-0">
+                <img id="ref-img-0" src="" alt="Ref 1">
+                <div class="ref-overlay">
+                  <span class="ref-badge">Ref 1</span>
+                  <button class="ref-clear" data-slot="0">✕</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="ref-slot" id="ref-slot-1">
+              <input type="file" id="ref-input-1" accept="image/png,image/jpeg,image/webp" style="display:none">
+              <div class="ref-empty" id="ref-empty-1">
+                <div class="ref-empty-icon">＋</div>
+                <div class="ref-empty-text">Reference 2</div>
+                <div class="ref-empty-sub">Click or drag</div>
+              </div>
+              <div class="ref-preview hidden" id="ref-preview-1">
+                <img id="ref-img-1" src="" alt="Ref 2">
+                <div class="ref-overlay">
+                  <span class="ref-badge">Ref 2</span>
+                  <button class="ref-clear" data-slot="1">✕</button>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-header">
+            <div class="section-label">✍️ PROMPT LIST</div>
+            <span id="prompt-line-count" class="prompt-line-count">0 prompts</span>
+          </div>
+          <div class="prompt-editor" id="prompt-editor">
+            <div class="line-numbers" id="line-numbers">1</div>
+            <textarea
+              id="prompt-list"
+              class="prompt-list-area"
+              placeholder="Paste prompts here, one per line...
+A warrior standing in a neon city at night
+A samurai meditating under cherry blossoms
+A knight riding through a dark forest"
+              spellcheck="false"
+            ></textarea>
+          </div>
+          <div class="prompt-editor-footer">
+            <span id="ref-prompt-count" class="img-count">0 prompts</span>
+            <button id="clear-prompts-btn" class="btn-xs btn-danger">Clear</button>
+          </div>
+        </div>
+
+      </div><!-- /reference-section -->
+
+      <!-- SETTINGS (shared) -->
+      <div class="section">
+        <div class="section-label">⚙️ SETTINGS</div>
+        <div class="settings-grid">
+
+          <div class="setting-row">
+            <span class="setting-label">Quality</span>
+            <div class="toggle-group">
+              <button class="tog active" data-quality="standard">Standard</button>
+              <button class="tog" data-quality="hd">HD 2K</button>
+            </div>
+          </div>
+
+          <div class="setting-row">
+            <span class="setting-label">Aspect Ratio</span>
+            <div class="toggle-group">
+              <button class="tog" data-ratio="1:1">1:1</button>
+              <button class="tog" data-ratio="16:9">16:9</button>
+              <button class="tog" data-ratio="9:16">9:16</button>
+              <button class="tog active" data-ratio="auto">Auto</button>
+            </div>
+          </div>
+
+          <div class="setting-row">
+            <span class="setting-label">Delay between images</span>
+            <div class="num-group">
+              <button class="num-btn" id="delay-minus">−</button>
+              <span id="delay-val">10</span>
+              <span class="unit">sec</span>
+              <button class="num-btn" id="delay-plus">+</button>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- TELEGRAM (shared) -->
+      <div class="section">
+        <div class="section-header">
+          <div class="section-label">📬 TELEGRAM NOTIFY</div>
+          <label class="switch">
+            <input type="checkbox" id="tg-toggle">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div id="tg-config" class="tg-config hidden">
+          <input type="text" id="tg-token" class="cfg-input" placeholder="Bot Token: 123456789:ABC-..." />
+          <div class="input-row">
+            <input type="text" id="tg-chatid" class="cfg-input" placeholder="Chat ID: -100123456..." />
+            <button id="tg-test-btn" class="btn-xs">Test 🔔</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- PROGRESS (shared) -->
+      <div id="progress-section" class="section hidden">
+        <div class="section-label">📊 PROGRESS</div>
+        <div class="progress-meta">
+          <span id="prog-count" class="prog-count">0 / 0</span>
+          <span id="prog-eta" class="prog-eta"></span>
+          <span id="prog-elapsed" class="prog-elapsed"></span>
+        </div>
+        <div class="prog-track">
+          <div id="prog-bar" class="prog-bar" style="width:0%"></div>
+        </div>
+        <div id="prog-log" class="prog-log"></div>
+      </div>
+
+    </div><!-- /content -->
+
+    <!-- Bottom Bar -->
+    <div class="bottom-bar">
+      <div id="batch-label" class="batch-label"></div>
+      <div class="action-row">
+        <button id="start-btn" class="btn-start" disabled>▶ START BATCH</button>
+        <button id="pause-btn" class="btn-pause hidden">⏸ PAUSE</button>
+        <button id="resume-btn" class="btn-resume hidden">▶ RESUME</button>
+        <button id="stop-btn" class="btn-stop hidden">⏹ STOP</button>
+      </div>
+    </div>
+
+  </div><!-- /main-screen -->
+
+  <!-- PRESET MODAL -->
+  <div id="preset-modal" class="modal hidden">
+    <div class="modal-box">
+      <div class="modal-title">💾 Save Preset</div>
+      <input type="text" id="preset-name" class="cfg-input" placeholder="e.g. Anime Style, Oil Painting..." />
+      <div class="modal-actions">
+        <button id="preset-confirm" class="btn-primary">Save</button>
+        <button id="preset-cancel" class="btn-ghost">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="config.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,37 @@
+{
+  "manifest_version": 3,
+  "name": "GPT Image Batch Pro",
+  "version": "1.0.0",
+  "description": "Batch process images using ChatGPT gpt-image-2. Upload multiple images, apply a prompt, and auto-download results.",
+  "permissions": [
+    "tabs",
+    "downloads",
+    "storage",
+    "cookies",
+    "sidePanel"
+  ],
+  "host_permissions": [
+    "https://chatgpt.com/*",
+    "https://chat.openai.com/*",
+    "https://api.telegram.org/*"
+  ],
+  "action": {
+    "default_icon": {
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://chatgpt.com/*", "https://chat.openai.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
