@@ -1,8 +1,7 @@
 // content.js — Runs inside ChatGPT tab (persistent, single tab)
-// v2: tracks message count to detect NEW images only, returns base64 blob
 
-let isReady       = false;
-let messageCount  = 0;   // how many assistant messages existed BEFORE this task
+let isReady      = false;
+let messageCount = 0;
 
 // ── Boot: wait for ChatGPT UI, then signal ready ──────
 async function waitForChatGPTUI() {
@@ -18,15 +17,8 @@ waitForChatGPTUI();
 // ── Message handler — only accept messages from this extension ──
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (sender.id !== chrome.runtime.id) return;
-
-  if (msg.type === 'PING') {
-    sendResponse({ ready: isReady });
-    return true;
-  }
-  if (msg.type === 'RUN_TASK') {
-    runTask(msg.task).then(sendResponse);
-    return true;
-  }
+  if (msg.type === 'PING') { sendResponse({ ready: isReady }); return true; }
+  if (msg.type === 'RUN_TASK') { runTask(msg.task).then(sendResponse); return true; }
 });
 
 // ══════════════════════════════════════════════════════
@@ -34,29 +26,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 // ══════════════════════════════════════════════════════
 async function runTask(task) {
   try {
-    // Snapshot how many assistant messages exist RIGHT NOW
-    // so we only watch for NEW ones after sending
     messageCount = countAssistantMessages();
 
-    // 1. Upload image
     await uploadImage(task.imageData);
     await sleep(1500);
 
-    // 2. Type prompt
     await typePrompt(task.prompt);
-    await sleep(600);
+    await sleep(500);
 
-    // 3. Send
     await clickSend();
 
-    // 4. Wait for NEW generated image (ignores previous images in chat)
-    const imageUrl = await waitForNewGeneratedImage(messageCount, 180000);
-
-    // 5. Fetch as blob IMMEDIATELY while still in tab (no URL expire)
+    const imageUrl    = await waitForNewGeneratedImage(messageCount, 180000);
     const imageBase64 = await fetchImageAsBase64(imageUrl);
 
     return { success: true, imageBase64 };
-
   } catch(err) {
     return { success: false, error: err.message };
   }
@@ -72,7 +55,9 @@ async function uploadImage(base64DataOrArray) {
     return new File([blob], `image_${i + 1}.png`, { type: 'image/png' });
   });
 
-  const fileInput = await waitForElement('input[type="file"]', 8000);
+  // Use the file input closest to the chat composer — avoids matching wrong inputs
+  const fileInputs = document.querySelectorAll('input[type="file"]');
+  const fileInput  = fileInputs[fileInputs.length - 1]; // last one is always chat's
   if (!fileInput) throw new Error('File input not found');
 
   const dt = new DataTransfer();
@@ -96,23 +81,30 @@ async function typePrompt(prompt) {
   editor.focus();
   await sleep(300);
 
-  // Clear
-  const sel = window.getSelection();
-  const range = document.createRange();
-  range.selectNodeContents(editor);
-  sel.removeAllRanges();
-  sel.addRange(range);
-  document.execCommand('delete', false, null);
+  // Primary: execCommand('insertText') — correctly triggers React synthetic events
+  document.execCommand('selectAll', false, null);
+  const ok = document.execCommand('insertText', false, prompt);
 
-  // Insert via clipboard API, fallback to textContent
-  try {
-    await navigator.clipboard.writeText(prompt);
-    document.execCommand('paste');
-  } catch {
-    editor.textContent = '';
-    editor.appendChild(document.createTextNode(prompt));
+  if (!ok) {
+    // Fallback 1: clipboard paste
+    try {
+      await navigator.clipboard.writeText(prompt);
+      document.execCommand('selectAll', false, null);
+      document.execCommand('paste');
+    } catch {
+      // Fallback 2: direct DOM + InputEvent
+      editor.textContent = '';
+      editor.focus();
+      document.execCommand('insertText', false, prompt);
+    }
+  }
+
+  // Verify text was actually inserted
+  const inserted = editor.textContent || editor.innerText || '';
+  if (!inserted.trim()) {
+    editor.textContent = prompt;
     editor.dispatchEvent(new InputEvent('input', {
-      bubbles: true, data: prompt, inputType: 'insertText'
+      bubbles: true, inputType: 'insertText', data: prompt
     }));
   }
 }
@@ -121,16 +113,17 @@ async function typePrompt(prompt) {
 //  CLICK SEND
 // ══════════════════════════════════════════════════════
 async function clickSend() {
+  // waitForElement now watches attributes so it catches disabled→enabled
   const btn = await waitForElement(
-    'button[data-testid="send-button"]:not(:disabled)',
-    5000
+    'button[data-testid="send-button"]:not([disabled])',
+    10000
   );
-  if (!btn) throw new Error('Send button not found or disabled');
+  if (!btn) throw new Error('Send button not found or still disabled');
   btn.click();
 }
 
 // ══════════════════════════════════════════════════════
-//  WAIT FOR NEW IMAGE ONLY (skips images from previous turns)
+//  WAIT FOR NEW IMAGE
 // ══════════════════════════════════════════════════════
 function countAssistantMessages() {
   return document.querySelectorAll('[data-message-author-role="assistant"]').length;
@@ -139,31 +132,20 @@ function countAssistantMessages() {
 function waitForNewGeneratedImage(prevMessageCount, timeout = 180000) {
   return new Promise((resolve, reject) => {
     const checkRateLimit = () => {
-      // Only check ChatGPT's error/notice elements, not entire page text
-      // Avoids false positives if user's prompt contains these keywords
-      const errorSelectors = [
-        '[data-testid="rate-limit-message"]',
-        '.text-red-500',
-        '.text-orange-500',
-      ];
-      for (const sel of errorSelectors) {
+      const selectors = ['[data-testid="rate-limit-message"]', '.text-red-500', '.text-orange-500'];
+      for (const sel of selectors) {
         const el = document.querySelector(sel);
-        if (el) {
-          const t = el.innerText || '';
-          if (t.includes("You've reached") || t.includes('rate limit') || t.includes('too many')) {
-            return true;
-          }
-        }
+        if (!el) continue;
+        const t = el.innerText || '';
+        if (t.includes("You've reached") || t.includes('rate limit') || t.includes('too many')) return true;
       }
       return false;
     };
 
-    // Only look at assistant messages that appeared AFTER we sent
     const findNewImage = () => {
-      const allMessages = document.querySelectorAll('[data-message-author-role="assistant"]');
-      // Only check messages newer than prevMessageCount
-      for (let i = prevMessageCount; i < allMessages.length; i++) {
-        const imgs = allMessages[i].querySelectorAll(
+      const msgs = document.querySelectorAll('[data-message-author-role="assistant"]');
+      for (let i = prevMessageCount; i < msgs.length; i++) {
+        const imgs = msgs[i].querySelectorAll(
           'img[src*="oaiusercontent"], img[src*="files.oaiusercontent"]'
         );
         if (imgs.length > 0) {
@@ -177,32 +159,26 @@ function waitForNewGeneratedImage(prevMessageCount, timeout = 180000) {
     const immediate = findNewImage();
     if (immediate) return resolve(immediate);
 
+    const timer = setTimeout(() => {
+      obs.disconnect();
+      reject(new Error('Timeout: image generation took too long'));
+    }, timeout);
+
     const obs = new MutationObserver(() => {
-      if (checkRateLimit()) {
-        obs.disconnect();
-        return reject(new Error('RATE_LIMIT'));
-      }
+      if (checkRateLimit()) { obs.disconnect(); clearTimeout(timer); return reject(new Error('RATE_LIMIT')); }
       const url = findNewImage();
-      if (url) {
-        obs.disconnect();
-        resolve(url);
-      }
+      if (url) { obs.disconnect(); clearTimeout(timer); resolve(url); }
     });
 
     obs.observe(document.body, {
       childList: true, subtree: true,
       attributes: true, attributeFilter: ['src']
     });
-
-    setTimeout(() => {
-      obs.disconnect();
-      reject(new Error('Timeout: image generation took too long'));
-    }, timeout);
   });
 }
 
 // ══════════════════════════════════════════════════════
-//  FETCH IMAGE AS BASE64 (while still in tab — no expire)
+//  FETCH IMAGE AS BASE64
 // ══════════════════════════════════════════════════════
 async function fetchImageAsBase64(url) {
   const res = await fetch(url, { credentials: 'include' });
@@ -214,7 +190,7 @@ async function fetchImageAsBase64(url) {
 function blobToBase64(blob) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload  = () => resolve(reader.result); // "data:image/png;base64,..."
+    reader.onload  = () => resolve(reader.result);
     reader.onerror = () => reject(new Error('FileReader failed'));
     reader.readAsDataURL(blob);
   });
@@ -232,20 +208,25 @@ function waitForElement(selector, timeout = 10000) {
       const found = document.querySelector(selector);
       if (found) { obs.disconnect(); resolve(found); }
     });
-    obs.observe(document.body, { childList: true, subtree: true });
+
+    // Watch both DOM changes AND attribute changes (e.g. disabled → enabled on send button)
+    obs.observe(document.body, {
+      childList: true, subtree: true,
+      attributes: true, attributeFilter: ['disabled', 'class', 'aria-disabled']
+    });
+
     setTimeout(() => { obs.disconnect(); resolve(null); }, timeout);
   });
 }
 
 function base64ToBlob(base64) {
   const parts = base64.split(';base64,');
-  const mime  = parts[0].split(':')[1];
-  const raw   = atob(parts[1]);
-  const arr   = new Uint8Array(raw.length);
+  if (parts.length < 2) throw new Error('Invalid base64 data');
+  const mime = parts[0].split(':')[1];
+  const raw  = atob(parts[1]);
+  const arr  = new Uint8Array(raw.length);
   for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
   return new Blob([arr], { type: mime });
 }
 
-function sleep(ms) {
-  return new Promise(r => setTimeout(r, ms));
-}
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
