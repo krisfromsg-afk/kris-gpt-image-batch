@@ -12,11 +12,22 @@ let doneCount    = 0;
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
 
 // ── Persist state to chrome.storage.session (survives SW idle unload) ──
+// Only lightweight metadata is saved — never base64 blobs, which can blow
+// past the 10 MB session-storage quota and silently kill the batch.
 async function saveState() {
-  await chrome.storage.session.set({
-    batchQueue, batchConfig, batchPaused, batchStopped,
-    chatTabId, currentIndex, doneCount
-  });
+  try {
+    const lightQueue = batchQueue.map(({ name, prompt, done, error }) => ({ name, prompt, done, error }));
+    const lightConfig = {
+      mode: batchConfig.mode, prompt: batchConfig.prompt,
+      quality: batchConfig.quality, ratio: batchConfig.ratio,
+      delay: batchConfig.delay, batchId: batchConfig.batchId,
+      tg: batchConfig.tg
+    };
+    await chrome.storage.session.set({
+      batchQueue: lightQueue, batchConfig: lightConfig,
+      batchPaused, batchStopped, chatTabId, currentIndex, doneCount
+    });
+  } catch { /* storage failure must never stop the batch */ }
 }
 
 async function loadState() {
@@ -166,8 +177,15 @@ async function processImage(item, index) {
 
   if (!batchStopped) {
     if (currentIndex < batchQueue.length) {
-      await sleep((batchConfig.delay ?? 10) * 1000);
-      await processNext();
+      // Countdown: tick every second so popup can show "Next image in Xs"
+      let remaining = (batchConfig.delay ?? 10);
+      while (remaining > 0 && !batchStopped) {
+        chrome.runtime.sendMessage({ type: 'BATCH_COUNTDOWN', seconds: remaining });
+        await sleep(1000);
+        remaining--;
+      }
+      chrome.runtime.sendMessage({ type: 'BATCH_COUNTDOWN', seconds: 0 });
+      if (!batchStopped) await processNext();
     } else {
       onBatchComplete();
     }
